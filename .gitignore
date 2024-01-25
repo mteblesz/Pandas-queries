@@ -1,7 +1,7 @@
 data/
-*.csv.gz
+#*.csv.gz
 *.db
-travel_stackexchange_com/
+#travel_stackexchange_com/
 
 
 # Byte-compiled / optimized / DLL files
