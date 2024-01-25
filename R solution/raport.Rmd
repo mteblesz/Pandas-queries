@@ -1,0 +1,476 @@
+---
+title: "PDRPy - Praca Domowa 1"
+author: "Michał Szeląg"
+date: "May 13, 2022"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+number_sections: true
+---
+  
+# Wstęp
+W poniższej pracy przedstawione jest wykonanie pracy domowej nr 1 z przedmiotu Prztwarzanie danych w językach R i Python. Po kodzie do każdego z zadań 1-4 jest sprawdzona poprawność uzyskanych wyników, a na koniec wykonany microbenchmark na wszystkich metodach przetwrzarzających podane dane.
+
+W zapytaniach SQL zmieniono znak "’" na "'".
+
+
+
+Wykonane zadania: 
+
+funckjami bazowymi - 1, 2, 3, 4
+
+dplyr - 1, 2, 3, 4, 5
+
+data.table - nie wykonane.
+
+
+
+
+Wczytanie danych:
+```{r, warning=FALSE}
+Badges <- read.csv("Badges.csv.gz")
+Posts <- read.csv("Posts.csv.gz")
+Users <- read.csv("Users.csv.gz")
+Votes <- read.csv("Votes.csv.gz")
+
+library(dplyr)
+```
+  
+# Rozwiązania
+
+## Zadanie 1
+Top 10 etykiet Badge o najwiekszej ilosci wystąpień, z nazwą etykiety i najmniejszą klasą spośród etykiet jednego typu.
+  
+
+```{r, warning=FALSE}
+# solution 0 - sql
+sql1 <- function(Badges){
+  res_sql <- sqldf::sqldf('SELECT Name,
+  COUNT(*) AS Number,
+  MIN(Class) AS BestClass
+  FROM Badges
+  GROUP BY Name
+  ORDER BY Number DESC
+  LIMIT 10')
+}
+
+# solution 1 - base functions
+base1 <- function(Badges){
+  res_base <-
+    aggregate(Badges$Class, 
+              Badges["Name"], 
+              function(x) c(Number = length(x), BestClass = min(x)))
+  res_base <- cbind.data.frame(Name = res_base[,1], res_base[,2])
+  res_base <- res_base[order(-res_base$Number),]
+  res_base <- head(res_base, 10)
+}
+
+# solution 2 - dplyr
+dplyr1 <- function(Badges){
+   
+  res_dplyr <- 
+    Badges[, c("Id", "Name", "Class")] %>%
+    group_by(Name) %>%
+    summarise(
+      Number = n(),
+      BestClass = min(Class)) %>%
+    arrange(desc(Number)) %>%
+    slice_head(n=10)
+}
+# Wyniki
+res_base1 <- base1(Badges)
+res_sql1 <- sql1(Badges)
+res_dplyr1 <- dplyr1(Badges)
+```
+Zgodność wyników:
+```{r}
+dplyr::all_equal(res_sql1, res_base1)
+compare::compare(res_sql1, res_base1, allowAll = TRUE)
+dplyr::all_equal(res_sql1, res_dplyr1)
+compare::compare(res_sql1, res_dplyr1, allowAll = TRUE)
+```
+
+
+## Zadanie 2
+Liczba postów, zamieszczonych przez wszystkich uzytkownikow pochodzących z danej lokacji.
+  
+```{r, warning=FALSE}
+# solution 0 - sqldf
+sql2 <- function(Posts, Users){
+  res_sql <- sqldf::sqldf(
+  "SELECT Location, COUNT(*) AS Count
+  FROM (
+        SELECT Posts.OwnerUserId, Users.Id, Users.Location
+        FROM Users
+        JOIN Posts ON Users.Id = Posts.OwnerUserId
+        )
+  WHERE Location NOT IN ('')
+  GROUP BY Location
+  ORDER BY Count DESC
+  LIMIT 10")
+}
+
+# solution 1 - base functions
+base2 <- function(Posts, Users){
+  res <- merge(Users, Posts,  by.x = "Id", by.y="OwnerUserId")
+  res <- data.frame(OwnerUserId = res$Id, 
+                    Id = res$Id,  
+                    Location = res$Location)
+  res <- res[res$Location != "", ]
+  
+  res <- aggregate(res[,1], by = res[c("Location")], length)
+  colnames(res)[2] <- "Count"
+  res <- res[order(-res$Count),]
+  res <- head(res, 10)
+}
+
+# solution 2 - dplyr
+dplyr2 <- function(Posts, Users){
+   
+  res_dplyr <- 
+    inner_join(Users,Posts,  by = c("Id" = "OwnerUserId")) %>%
+    select(c(Id, Location)) %>%
+    filter(Location != "") %>%
+    group_by(Location) %>%
+    summarise(
+      Count = n()) %>%
+    arrange(desc(Count)) %>%
+    slice_head(n=10)
+}
+  
+
+# Wyniki
+res_base2 <- base2(Posts, Users)
+res_sql2 <- sql2(Posts, Users)
+res_dplyr2 <- dplyr2(Posts, Users)
+
+```
+Zgodność wyników:
+```{r}
+dplyr::all_equal(res_sql2, res_base2)
+compare::compare(res_sql2, res_base2, allowAll = TRUE)
+dplyr::all_equal(res_sql2, res_dplyr2)
+compare::compare(res_sql2, res_dplyr2, allowAll = TRUE)
+```
+
+## Zadanie 3
+Top 10 postów, które uzyskały najwięcej odpowiedzi.
+
+```{r, warning=FALSE}
+# solution 0 - sql
+sql3 <- function(Posts, Users){
+  res_sql <- sqldf::sqldf(
+    "SELECT
+        Users.AccountId,
+        Users.DisplayName,
+        Users.Location,
+        AVG(PostAuth.AnswersCount) as AverageAnswersCount
+    FROM
+        (
+        SELECT
+        AnsCount.AnswersCount,
+        Posts.Id,
+        Posts.OwnerUserId
+        FROM 
+            (
+            SELECT Posts.ParentId, COUNT(*) AS AnswersCount
+            FROM Posts
+            WHERE Posts.PostTypeId = 2
+            GROUP BY Posts.ParentId
+            ) AS AnsCount
+        JOIN Posts ON Posts.Id = AnsCount.ParentId
+        ) AS PostAuth
+    JOIN Users ON Users.AccountId=PostAuth.OwnerUserId
+    GROUP BY OwnerUserId
+    ORDER BY AverageAnswersCount DESC
+    LIMIT 10
+")
+}
+
+# solution 1 - base functions
+base3 <- function(Posts, Users){
+  ansCount <- Posts[Posts$PostTypeId == 2, c("Id", "ParentId")]
+  ansCount <- aggregate(ansCount[ , 1], by = ansCount[c("ParentId")], length)
+  colnames(ansCount)[2] <- "AnswersCount"
+  
+  postAuth <- merge(Posts, ansCount, by.x = "Id", by.y = "ParentId")
+  postAuth <- data.frame(AnswersCount = postAuth$AnswersCount, 
+                         Id = postAuth$Id,  
+                         OwnerUserId = postAuth$OwnerUserId)
+  
+  res <- merge(Users, postAuth, by.x = "AccountId", by.y = "OwnerUserId")
+  res <- aggregate(res["AnswersCount"], 
+                   by = res[c("AccountId",
+                              "DisplayName",
+                              "Location")], 
+                   mean)
+  
+  colnames(res)[colnames(res) == "AnswersCount"] <- "AverageAnswersCount"
+  res <- res[order(-res$AverageAnswersCount), ] #TO ZMIENIC
+  res <- head(res, 10) 
+  res %>% as.data.frame(row.names = 1:nrow(.))
+}
+
+# solution 2 - dplyr
+dplyr3 <- function(Posts, Users){
+   
+  res_dplyr <- Posts %>%
+  filter(PostTypeId == 2) %>%
+  select(Id, ParentId, PostTypeId) %>%
+  group_by(ParentId) %>%
+  summarise(AnswersCount = n()) %>%
+  inner_join(x = Posts, y = ., by = c("Id" = "ParentId")) %>%
+  select(AnswersCount, Id, OwnerUserId) %>%
+  inner_join(x = Users, y = ., by = c("AccountId" = "OwnerUserId")) %>%
+  select(AccountId, AnswersCount) %>%
+  group_by(AccountId) %>%
+  summarise(AverageAnswersCount = mean(AnswersCount)) %>%
+  inner_join(x = Users, y = ., by = "AccountId") %>% #getting location and name back
+  select(AccountId, DisplayName, Location, AverageAnswersCount) %>%
+  arrange(desc(AverageAnswersCount)) %>%
+  slice_head(n=10)
+}
+  
+
+# Wyniki
+res_base3 <- base3(Posts, Users)
+res_sql3 <- sql3(Posts, Users)
+res_dplyr3 <- dplyr3(Posts, Users)
+
+```
+Zgodność wyników:
+```{r}
+dplyr::all_equal(res_sql3, res_base3)
+compare::compare(res_sql3, res_base3, allowAll = TRUE)
+dplyr::all_equal(res_sql3, res_dplyr3)
+compare::compare(res_sql3, res_dplyr3, allowAll = TRUE)
+```
+
+## Zadanie 4
+Post(typu PostTypeId=1), który w danym roku ma najwięcej UpVote-ów (typu VoteTypeId=2). Wiersze zawierają tytuł rekordowego posta, rok zamieszenia i ilość UpVote-ów (maksimum danego roku).
+```{r, warning=FALSE}
+# solution 0 - sqldf
+sql4 <- function(Posts, Votes){
+  res_sql <- sqldf::sqldf(
+    "SELECT
+        Posts.Title,
+        UpVotesPerYear.Year,
+        MAX(UpVotesPerYear.Count) AS Count
+    FROM 
+        (
+        SELECT
+            PostId,
+            COUNT(*) AS Count,
+            STRFTIME('%Y', Votes.CreationDate) AS Year
+        FROM Votes
+        WHERE VoteTypeId=2
+        GROUP BY PostId, Year
+        ) AS UpVotesPerYear
+    JOIN Posts ON Posts.Id=UpVotesPerYear.PostId
+    WHERE Posts.PostTypeId=1
+    GROUP BY Year
+    ORDER BY Year ASC
+
+")
+}
+
+# solution 1 - base functions
+base4 <- function(Posts, Votes){
+  inner <- Votes[Votes$VoteTypeId == 2, 
+                 c("PostId", "Id", "CreationDate")]
+  inner["CreationDate"] <- lapply(inner["CreationDate"], 
+                                  function(d) c(format(as.Date(d), "%Y")))
+  colnames(inner)[colnames(inner) == "CreationDate"] <- "Year"
+  inner <- aggregate(inner[ , 2], by = inner[c("PostId", "Year")], length)
+  colnames(inner)[colnames(inner) == "x"] <- "Count"
+  
+  outer <- Posts[Posts$PostTypeId == 1, c("Id", "Title")]
+  outer <- merge(outer, inner, by.x = "Id", by.y = "PostId")
+  x <- outer 
+  x_splitted <- split(x, x$Year)
+  x_agg <- lapply(x_splitted, function(z) z[which.max(z$Count), ])
+  outer <- data.frame(
+                      Title = sapply(x_agg, function(z) z$Title),
+                      Year = sapply(x_agg, function(z) z$Year),
+                      Count = sapply(x_agg, function(z) z$Count)                      
+                    )
+  outer <- outer[order(outer$Year), ]
+}
+
+# solution 2 - dplyr
+dplyr4 <- function(Posts, Votes){
+   
+  res_dplyr <- Votes %>% 
+    filter(VoteTypeId ==2) %>%
+    select(PostId, Id, CreationDate) %>%
+    mutate(Year = format(as.Date(CreationDate), "%Y")) %>%
+    group_by(PostId, Year) %>%
+    summarize(Count = n(), .groups = 'drop') %>%
+    inner_join(x = Posts %>%  filter(PostTypeId == 1) %>% select(Id, Title),
+               y = ., by = c("Id" = "PostId")) %>%
+    group_by(Year) %>%
+    filter(Count == max(Count)) %>%
+    select(Title, Year, Count) %>%
+    arrange(Year) 
+}
+
+# Wyniki
+res_base4 <- base4(Posts, Votes)
+res_sql4 <- sql4(Posts, Votes)
+res_dplyr4 <- dplyr4(Posts, Votes)
+```
+
+Zgodność wyników:
+```{r}
+dplyr::all_equal(res_sql4, res_base4)
+compare::compare(res_sql4, res_base4, allowAll = TRUE)
+dplyr::all_equal(res_sql4, res_dplyr4)
+compare::compare(res_sql4, res_dplyr4, allowAll = TRUE)
+```
+## Zadanie 5
+Top 10 postów (typu PostTypeId=1), które w latach 2021-2020 uzyskały 0 głosów. Sortowanie względem ilości głosów sprzed 2020 roku.
+```{r}
+# solution 0 - sqldf
+sql5 <- function(Posts, Votes){
+  res_sql <- sqldf::sqldf(
+    "SELECT
+    Posts.Title,
+    VotesByAge2.OldVotes
+    FROM Posts
+    JOIN (
+        SELECT
+            PostId,
+            MAX(CASE WHEN VoteDate = 'new' THEN Total ELSE 0 END) NewVotes,
+            MAX(CASE WHEN VoteDate = 'old' THEN Total ELSE 0 END) OldVotes,
+            SUM(Total) AS Votes
+        FROM (
+            SELECT
+              PostId,
+              CASE STRFTIME('%Y', CreationDate)
+                WHEN '2021' THEN 'new'
+                WHEN '2020' THEN 'new'
+                ELSE 'old'
+              END VoteDate,
+              COUNT(*) AS Total
+            FROM Votes
+            WHERE VoteTypeId IN (1, 2, 5)
+            GROUP BY PostId, VoteDate
+            ) AS VotesByAge
+        GROUP BY VotesByAge.PostId
+        HAVING NewVotes=0
+        ) AS VotesByAge2 ON VotesByAge2.PostId=Posts.ID
+    WHERE Posts.PostTypeId=1
+    ORDER BY VotesByAge2.OldVotes DESC
+    LIMIT 10
+
+
+")
+}
+
+
+# solution 2 - dplyr
+dplyr5 <- function(Posts, Votes){
+  library(dplyr)
+  res_dplyr <- Votes %>%
+    filter(VoteTypeId %in% c(1, 2, 5)) %>%
+    mutate(Year = format(as.Date(CreationDate), "%Y")) %>%
+    mutate(VoteDate = case_when(
+      Year == 2021 ~ 'new',
+      Year == 2020 ~ 'new',
+      TRUE ~ 'old'
+    )) %>%
+    group_by(PostId, VoteDate) %>%
+    summarize(Total = n(), .groups = 'drop') %>% # end of VotesByAge  nowe/stare głosy na posty 
+    mutate( 
+      NewVotes = if_else(VoteDate == 'new', Total, 0L)) %>%
+    mutate( 
+      OldVotes = if_else(VoteDate == 'old', Total, 0L)) %>%
+    group_by(PostId) %>%
+    summarize(
+      NewVotes = max(NewVotes),
+      OldVotes = max(OldVotes),
+      Votes = sum(Total)) %>%
+    filter(NewVotes == 0) %>% #2 wiersze z rozną wartosia zmienione na kolumny
+    inner_join(x = Posts %>%  filter(PostTypeId == 1), 
+               y = ., by = c("Id" = "PostId")) %>%
+    select(Title, OldVotes) %>%
+    arrange(desc(OldVotes))%>%
+    slice_head(n=10)
+}
+
+
+# testing
+res_sql5 <- sql5(Posts, Votes)
+res_dplyr5 <- dplyr5(Posts, Votes)
+```
+Zgodność wyników;
+```{r}
+dplyr::all_equal(res_sql5, res_dplyr5)
+compare::compare(res_sql5, res_dplyr5, allowAll = TRUE)
+```
+
+
+
+
+# Benchmark
+
+```{r}
+# Zadanie 1
+microbenchmark::microbenchmark(
+  sqldf1 = sql1(Badges),
+  base1 = base1(Badges),
+  dplyr1 = dplyr1(Badges)
+) -> res1
+summary(res1) 
+
+```
+
+```{r}
+# Zadanie 2
+microbenchmark::microbenchmark(
+  sqldf2 = sql2(Posts, Users),
+  base2 = base2(Posts, Users),
+  dplyr2 = dplyr2(Posts, Users)
+) -> res2
+summary(res2)
+
+```
+
+```{r}
+# Zadanie 3
+microbenchmark::microbenchmark(
+  sqldf3 = sql3(Posts, Users),
+  base3 = base3(Posts, Users),
+  dplyr3 = dplyr3(Posts, Users)
+) -> res3
+summary(res3)
+```
+
+```{r}
+# Zadanie 4
+microbenchmark::microbenchmark(
+  sqldf4 = sql4(Posts, Votes),
+  base4 = base4(Posts, Votes),
+  dplyr4 = dplyr4(Posts, Votes)
+) -> res4
+summary(res4)
+
+```
+
+```{r}
+# Zadanie 5
+microbenchmark::microbenchmark(
+  sqldf5 = sql5(Posts, Votes),
+  dplyr5 = dplyr5(Posts, Votes)
+) -> res5
+summary(res5)
+```
+
+
+# Podsumowanie
+Dla pierwszych trzech zapytań najwolniejszą z testowanych metod była
+ta korzystająca z biblioteki sqldf, zarówno funkcje bazowe jak i dplyr
+pozwalają osiągnąc lepsze rezultaty. W przypadku zapytania nr 4 moje
+rozwiązania korzystające z funckji bazowych jak i biblioteki dplyr byly
+średnio ok. 4 razy wolniejsze od rozwiąznia referenecyjnego. Benchamrk do zadania 5 został pominięty w pliku html z uwagi na bardzo długi czas wykonania.
